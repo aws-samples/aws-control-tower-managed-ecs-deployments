@@ -1,0 +1,333 @@
+#  Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance with
+#  the License. A copy of the License is located at
+#      http://aws.amazon.com/apache2.0/
+#  or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+#  CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and
+#  limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CodePipeline for the Sample Lambda Function
+Parameters:
+  ApplicationName:
+    Description: Name of the Application
+    Type: String
+  CodeCommitRepositoryName:
+    Description: Name of the Code Commit Repository
+    Type: String
+  ECRRepositoryName:
+    Description: Name of the ECR Repository
+    Type: String
+  ApplicationAccount:
+    Description: AWS AccountNumber for dev
+    Type: Number
+  CMKARN:
+    Description: ARN of the KMS CMK creates in Tools account
+    Type: String
+  VpcId:
+    Description: VPC ID
+    Type: String
+  PublicSubnets:
+    Description: Public Subnets
+    Type: String
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+  CodeCommitRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub CodeCommitRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Ref AWS::AccountId
+            Action:
+              - sts:AssumeRole
+      Path: /
+  CodeCommitPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub CodeCommitPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - codecommit:BatchGetRepositories
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:List*
+              - codecommit:CancelUploadArchive
+              - codecommit:UploadArchive
+              - s3:*
+            Resource: "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:*
+            Resource: !Ref CMKARN
+      Roles:
+        -
+          !Ref CodeCommitRole
+  BuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ApplicationName}-CodeBuildRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  BuildProjectPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ApplicationName}-CodeBuildPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+             - !Sub '${ArtifactBucket.Arn}/*'
+             - !GetAtt ArtifactBucket.Arn
+          -
+            Effect: Allow
+            Action:
+              - kms:*
+            Resource: !Ref CMKARN
+          -
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          -
+            Effect: Allow
+            Action:
+              - 'ecr:*'
+            Resource: '*'
+      Roles:
+        -
+          !Ref BuildProjectRole
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ApplicationName
+      Description: !Ref ApplicationName
+      EncryptionKey: !Ref CMKARN
+      ServiceRole: !GetAtt BuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ApplicationName
+            Value: !Ref ApplicationName
+          - Name: ECRRepositoryName
+            Value: !Ref ECRRepositoryName
+          - Name: AWS_ACCOUNT
+            Value: !Ref AWS::AccountId
+          - Name: VpcId
+            Value: !Ref VpcId
+          - Name: PublicSubnets
+            Value: !Ref PublicSubnets
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Ref ApplicationName
+  PipeLineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ApplicationName}-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: ArtifactBucketPolicy
+    Properties:
+      PolicyName: !Sub ${ApplicationName}-codepipeline-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - cloudformation:Describe*
+              - cloudFormation:List*
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:ValidateTemplate
+              - iam:PassRole
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - sts:AssumeRole
+            Resource:
+              - "*"
+          -
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !Ref CMKARN
+          -
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+             - !Sub '${ArtifactBucket.Arn}/*'
+             - !GetAtt ArtifactBucket.Arn
+      Roles:
+        -
+          !Ref PipeLineRole
+  Pipeline:
+    DependsOn: PipelinePolicy
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipeLineRole.Arn
+      Name: !Ref ApplicationName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepositoryName
+                BranchName: master
+              OutputArtifacts:
+                - Name: SCCheckoutArtifact
+              RunOrder: 1
+              RoleArn: !GetAtt CodeCommitRole.Arn
+        -
+          Name: Build
+          Actions:
+          -
+            Name: Build
+            ActionTypeId:
+              Category: Build
+              Owner: AWS
+              Version: 1
+              Provider: CodeBuild
+            Configuration:
+              ProjectName: !Ref BuildProject
+            RunOrder: 1
+            InputArtifacts:
+              - Name: SCCheckoutArtifact
+            OutputArtifacts:
+              - Name: BuildOutput
+        - Name: DeployToTest
+          Actions:
+            - Name: CreateChangeSetTest
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ChangeSetName: !Ref ApplicationName
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Ref ApplicationName
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: BuildOutput::ecs.yml
+                TemplateConfiguration: BuildOutput::ecs-configuration.json
+                RoleArn: !Sub arn:aws:iam::${ApplicationAccount}:role/CloudFormationExecutionRole
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+              RoleArn: !Sub arn:aws:iam::${ApplicationAccount}:role/CodePipelineRole
+            - Name: DeployChangeSetTest
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ChangeSetName: !Ref ApplicationName
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Ref ApplicationName
+                RoleArn: !Sub arn:aws:iam::${ApplicationAccount}:role/CloudFormationExecutionRole
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 2
+              RoleArn: !Sub arn:aws:iam::${ApplicationAccount}:role/CodePipelineRole
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !Ref CMKARN
+          Type: KMS
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          -
+            Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+             - !Sub '${ArtifactBucket.Arn}/*'
+             - !GetAtt ArtifactBucket.Arn
+            Principal:
+              AWS:
+                - !GetAtt CodeCommitRole.Arn
+                - !Sub arn:aws:iam::${ApplicationAccount}:role/CodePipelineRole
+                - !GetAtt BuildProjectRole.Arn

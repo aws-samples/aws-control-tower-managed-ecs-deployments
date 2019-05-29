@@ -1,0 +1,172 @@
+Parameters:
+  ApplicationName:
+    Description: Name of the Project
+    Type: String
+  ECRImageURI:
+    Description: Name of the image URI
+    Type: String
+  VpcId:
+    Description: VPC ID
+    Type: String
+  PublicSubnets:
+    Description: Public Subnets
+    Type: CommaDelimitedList
+Resources:
+  CloudwatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref ApplicationName
+      RetentionInDays: 30
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ecs-tasks.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+      RoleName: !Sub "${ApplicationName}ExecutionRole"
+  ECSLbSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Sub "Security group for the ${ApplicationName} Application Load Balancer"
+      SecurityGroupEgress:
+       - IpProtocol: 'tcp'
+         FromPort: '80'
+         ToPort: '80'
+         SourceSecurityGroupId: !GetAtt ECSServiceSecurityGroup.GroupId
+      SecurityGroupIngress:
+       - IpProtocol: 'tcp'
+         FromPort: '80'
+         ToPort: '80'
+         CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+  ECSServiceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Sub "Security group the the ${ApplicationName} ECS"
+      SecurityGroupEgress:
+       - IpProtocol: '-1'
+         FromPort: '-1'
+         ToPort: '-1'
+         CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+  ELBSecurityGroupIngress1:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt ECSServiceSecurityGroup.GroupId
+      IpProtocol: -1
+      FromPort: '-1'
+      ToPort: '-1'
+      SourceSecurityGroupId: !GetAtt ECSServiceSecurityGroup.GroupId
+  ELBSecurityGroupIngress2:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt ECSServiceSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      SourceSecurityGroupId: !GetAtt ECSLbSecurityGroup.GroupId
+  ECSLoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Scheme: "internet-facing"
+      SecurityGroups:
+        - !Ref ECSLbSecurityGroup
+      Subnets: !Ref PublicSubnets
+      Type: "application"
+      IpAddressType: "ipv4"
+  ECSLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+  ECSLBListner:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref ECSLBTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref ECSLoadBalancer
+      Port: 80
+      Protocol: HTTP
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ApplicationName
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Name: application
+          Image: !Sub "${ECRImageURI}"
+          Cpu: 512
+          MemoryReservation: 1024
+          EntryPoint:
+            - "/usr/sbin/apache2"
+            - "-D"
+            - FOREGROUND
+          PortMappings:
+            - HostPort: 80
+              Protocol: tcp
+              ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudwatchLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Sub "${CloudwatchLogGroup}/frontend"
+          MountPoints:
+          - ContainerPath: "/var/www/my-vol"
+            SourceVolume: my-vol
+        - Name: busybox
+          Image: busybox
+          Cpu: 10
+          MemoryReservation: 512
+          EntryPoint:
+            - "sh"
+            - "-c"
+          Command:
+            - "/bin/sh -c \"while true; do /bin/date > /var/www/my-vol/date; sleep 1; done\""
+          VolumesFrom:
+            - SourceContainer: application
+      Cpu: 1 vcpu
+      ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+      Family: !Ref ApplicationName
+      Memory: 2 gb
+      NetworkMode: awsvpc
+      Volumes:
+      - Name: my-vol
+      RequiresCompatibilities:
+        - FARGATE
+  FargateService:
+    Type: AWS::ECS::Service
+    DependsOn: ECSLBListner
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: 1
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !GetAtt ECSServiceSecurityGroup.GroupId
+          Subnets: !Ref PublicSubnets
+      LoadBalancers:
+        - ContainerName: application
+          ContainerPort: 80
+          TargetGroupArn: !Ref ECSLBTargetGroup
+Outputs:
+  AppDNSName:
+    Value: !GetAtt ECSLoadBalancer.DNSName

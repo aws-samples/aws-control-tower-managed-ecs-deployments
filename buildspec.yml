@@ -1,0 +1,36 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      docker: 18
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - aws ecr get-login-password | docker login --username AWS --password-stdin $AWS_ACCOUNT.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$(aws ecr describe-repositories --repository-name ${ECRRepositoryName} --query=repositories[0].repositoryUri --output=text)
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - PWD=$(pwd)
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - git clone https://github.com/aws-samples/ecs-demo-php-simple-app.git
+      - cd ecs-demo-php-simple-app
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo Writing image definitions file...
+      - echo Source DIR ${CODEBUILD_SRC_DIR}
+      - cd ../
+      - printf '{"Parameters":{"ApplicationName":"%s","ECRImageURI":"%s", "VpcId":"%s","PublicSubnets":"%s"}}' ${ApplicationName} $REPOSITORY_URI:$IMAGE_TAG $VpcId $PublicSubnets > ${CODEBUILD_SRC_DIR}/ecs-configuration.json
+artifacts:
+  files:
+  - 'ecs.yml'
+  - 'ecs-configuration.json'
