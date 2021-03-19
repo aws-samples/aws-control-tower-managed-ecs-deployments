@@ -15,6 +15,10 @@ Parameters:
   CodeCommitRepositoryName:
     Description: Name of the Code Commit Repository
     Type: String
+  BranchName:
+    Description: Name of the Code Commit repo branch
+    Type: String
+    Default: main
   ECRRepositoryName:
     Description: Name of the ECR Repository
     Type: String
@@ -250,7 +254,7 @@ Resources:
                 Provider: CodeCommit
               Configuration:
                 RepositoryName: !Ref CodeCommitRepositoryName
-                BranchName: master
+                BranchName: !Ref BranchName
               OutputArtifacts:
                 - Name: SCCheckoutArtifact
               RunOrder: 1
